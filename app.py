@@ -1,10 +1,8 @@
 import streamlit as st
 import pandas as pd
 import requests
-import folium
-from streamlit_folium import st_folium
 import plotly.express as px
-import time
+import plotly.graph_objects as go
 
 # ==========================================
 # 1. CONFIGURACIÓN DE LA PÁGINA
@@ -12,48 +10,24 @@ import time
 st.set_page_config(
     page_title="Frente de Lluvia - Chile",
     page_icon="🌧️",
-    layout="wide"
+    layout="wide",
 )
 
-# Estilos CSS limpios y optimizados para móviles
-st.markdown("""
+CSS = """
     <style>
-    /* Compactar márgenes superiores para que todo suba en la pantalla */
-    .block-container {
-        padding-top: 1.5rem !important;
-        padding-bottom: 1rem !important;
-    }
-    
-    /* Caja de fecha activa estilo "Badge" tecnológico */
-    .time-badge {
-        background-color: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 8px;
-        padding: 6px 12px;
-        text-align: center;
-        font-family: monospace;
-        font-size: 14px;
-        color: #38bdf8;
-        font-weight: bold;
-    }
-
-    /* Pie de página elegante */
+    .block-container { padding-top: 1.2rem !important; padding-bottom: 1rem !important; }
+    #MainMenu, footer { visibility: hidden; }
+    h1 { font-size: 1.6rem !important; }
     .custom-footer {
-        text-align: center;
-        padding: 20px 10px;
-        margin-top: 40px;
-        border-top: 1px solid #334155;
-        color: #64748b;
-        font-size: 13px;
+        text-align: center; padding: 20px 10px; margin-top: 40px;
+        border-top: 1px solid #334155; color: #64748b; font-size: 13px;
     }
-    .custom-footer strong {
-        color: #94a3b8;
-    }
+    .custom-footer strong { color: #94a3b8; }
     </style>
-""", unsafe_allow_html=True)
+"""
 
 # ==========================================
-# 2. DEFINICIÓN DE CIUDADES (Sur a Norte)
+# 2. CIUDADES (SUR A NORTE) Y PALETAS
 # ==========================================
 CITIES = {
     "Punta Arenas": {"lat": -53.155, "lon": -70.909},
@@ -69,257 +43,263 @@ CITIES = {
     "Rancagua": {"lat": -34.165, "lon": -70.740},
     "Santiago": {"lat": -33.449, "lon": -70.662},
     "Valparaíso": {"lat": -33.047, "lon": -71.613},
-    "La Serena": {"lat": -29.902, "lon": -71.252}
+    "La Serena": {"lat": -29.902, "lon": -71.252},
 }
 
+# Acumulación: de casi invisible (slate) a violeta
+ESCALA_ACUM = ["#334155", "#38bdf8", "#4f46e5", "#7c3aed"]
+# Intensidad horaria (Hovmöller): fondo oscuro que se enciende con la lluvia
+ESCALA_INTENSIDAD = [
+    [0.00, "#0b1220"], [0.06, "#1e3a8a"], [0.30, "#38bdf8"],
+    [0.65, "#4f46e5"], [1.00, "#c4b5fd"],
+]
+DIAS_ES = {"Mon": "Lun", "Tue": "Mar", "Wed": "Mié", "Thu": "Jue",
+           "Fri": "Vie", "Sat": "Sáb", "Sun": "Dom"}
+
+FONT_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#cbd5e1", size=13),
+)
+
+
+def etiqueta_es(ts: pd.Timestamp) -> str:
+    dia = DIAS_ES.get(ts.strftime("%a"), ts.strftime("%a"))
+    return f"{dia} {ts.strftime('%d')} · {ts.strftime('%H')}h"
+
+
 # ==========================================
-# 3. OBTENCIÓN DE DATOS (CON CACHÉ)
+# 3. DATOS (OPEN-METEO, CON CACHÉ)
 # ==========================================
-@st.cache_data(ttl=3600)
-def fetch_precipitation_forecast():
-    lats = [str(info["lat"]) for info in CITIES.values()]
-    lons = [str(info["lon"]) for info in CITIES.values()]
-    
+def _fetch_precipitation() -> pd.DataFrame:
+    lats = [str(c["lat"]) for c in CITIES.values()]
+    lons = [str(c["lon"]) for c in CITIES.values()]
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": ",".join(lats),
         "longitude": ",".join(lons),
         "hourly": "precipitation",
         "timezone": "America/Santiago",
-        "forecast_days": 7
+        "forecast_days": 7,
     }
-    
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        
-        if not isinstance(data, list):
-            data = [data]
-            
-        records = []
-        for city_name, city_data in zip(CITIES.keys(), data):
-            hourly = city_data.get("hourly", {})
-            times = hourly.get("time", [])
-            precip = hourly.get("precipitation", [])
-            
-            for t, p in zip(times, precip):
-                records.append({
-                    "Ciudad": city_name,
-                    "Latitud": CITIES[city_name]["lat"],
-                    "Longitud": CITIES[city_name]["lon"],
-                    "Fecha_Hora": pd.to_datetime(t),
-                    "Precipitacion": p
-                })
-        return pd.DataFrame(records)
-    except Exception as e:
-        st.error(f"Error al conectar con el servidor meteorológico: {e}")
-        return pd.DataFrame()
+    response = requests.get(url, params=params, timeout=20)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, list):
+        data = [data]
 
-df = fetch_precipitation_forecast()
+    records = []
+    for ciudad, payload in zip(CITIES.keys(), data):
+        hourly = payload.get("hourly", {})
+        for t, p in zip(hourly.get("time", []), hourly.get("precipitation", [])):
+            records.append({
+                "Ciudad": ciudad,
+                "Latitud": CITIES[ciudad]["lat"],
+                "Longitud": CITIES[ciudad]["lon"],
+                "Fecha_Hora": pd.to_datetime(t),
+                "Precipitacion": 0.0 if p is None else float(p),
+            })
+    return pd.DataFrame(records)
 
-if df.empty:
-    st.warning("No se pudieron cargar los datos de pronóstico.")
-    st.stop()
 
-# Ordenar las horas disponibles de la simulación
-horas_disponibles = sorted(df["Fecha_Hora"].unique())
+def preparar_datos(df: pd.DataFrame, paso_horas: int = 3):
+    """Agrega acumulado por ciudad y submuestrea cada N horas para la animación."""
+    df = df.sort_values(["Ciudad", "Fecha_Hora"]).reset_index(drop=True)
+    df["Acumulado"] = df.groupby("Ciudad")["Precipitacion"].cumsum()
+
+    df_anim = df[df["Fecha_Hora"].dt.hour % paso_horas == 0].copy()
+    df_anim["Cuadro"] = df_anim["Fecha_Hora"].map(etiqueta_es)
+    orden_cuadros = [etiqueta_es(t) for t in sorted(df_anim["Fecha_Hora"].unique())]
+    return df, df_anim, orden_cuadros
+
 
 # ==========================================
-# 4. TRADUCCIÓN Y FORMATEO DE FECHAS
+# 4. MAPA ANIMADO (CLIENT-SIDE, SIN RERUNS)
 # ==========================================
-dias_es = {
-    "Monday": "Lun", "Tuesday": "Mar", "Wednesday": "Mié", 
-    "Thursday": "Jue", "Friday": "Vie", "Saturday": "Sáb", "Sunday": "Dom"
-}
+def build_mapa(df_anim: pd.DataFrame, orden_cuadros: list) -> go.Figure:
+    usa_maplibre = hasattr(px, "scatter_map")
+    scatter = px.scatter_map if usa_maplibre else px.scatter_mapbox
+    estilo = {"map_style": "carto-darkmatter"} if usa_maplibre \
+        else {"mapbox_style": "carto-darkmatter"}
 
-def format_date_es(dt):
-    dt_p = pd.to_datetime(dt)
-    dia_eng = dt_p.strftime("%A")
-    dia_trad = dias_es.get(dia_eng, dia_eng)
-    return f"{dia_trad} {dt_p.strftime('%d/%m - %H:00')}"
-
-# ==========================================
-# 5. CONTROLADOR DE REPRODUCCIÓN AUTOMÁTICA (STATE)
-# ==========================================
-if "current_index" not in st.session_state:
-    st.session_state.current_index = 0
-if "playing" not in st.session_state:
-    st.session_state.playing = False
-
-# Título compacto
-st.title("🌧️ Evolución de Frente Atmosférico")
-
-# Fila de control ultra-compacta (Súper amigable con celulares)
-ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2])
-
-with ctrl_col1:
-    # Botón de Play / Pausa interactivo
-    button_label = "⏸️ Pausar" if st.session_state.playing else "▶️ Play"
-    if st.button(button_label, use_container_width=True):
-        st.session_state.playing = not st.session_state.playing
-        st.rerun()
-
-with ctrl_col2:
-    # Botón para volver al inicio de la simulación
-    if st.button("🔄 Reiniciar", use_container_width=True):
-        st.session_state.current_index = 0
-        st.session_state.playing = False
-        st.rerun()
-
-with ctrl_col3:
-    # Mostrar la fecha y hora activa de forma muy estilizada
-    active_time = horas_disponibles[st.session_state.current_index]
-    st.markdown(
-        f'<div class="time-badge">📍 {format_date_es(active_time)}</div>', 
-        unsafe_allow_html=True
+    max_acum = float(df_anim["Acumulado"].max()) or 1.0
+    fig = scatter(
+        df_anim,
+        lat="Latitud", lon="Longitud",
+        size="Precipitacion", size_max=26,
+        color="Acumulado",
+        color_continuous_scale=ESCALA_ACUM,
+        range_color=(0, max_acum),
+        animation_frame="Cuadro",
+        category_orders={"Cuadro": orden_cuadros},
+        hover_name="Ciudad",
+        hover_data={
+            "Latitud": False, "Longitud": False, "Cuadro": False,
+            "Precipitacion": ":.1f", "Acumulado": ":.0f",
+        },
+        labels={"Precipitacion": "mm/h", "Acumulado": "mm acumulados"},
+        zoom=3.3, center={"lat": -41.2, "lon": -72.3},
+        height=560,
+        **estilo,
     )
 
-# Filtrar datos de la hora seleccionada para el mapa
-df_actual = df[df["Fecha_Hora"] == active_time]
+    # Puntos fijos de referencia por ciudad (persisten entre cuadros:
+    # las frames solo reescriben la traza 0)
+    ScatterGeo = go.Scattermap if usa_maplibre else go.Scattermapbox
+    fig.add_trace(ScatterGeo(
+        lat=[c["lat"] for c in CITIES.values()],
+        lon=[c["lon"] for c in CITIES.values()],
+        mode="markers",
+        marker=dict(size=4, color="#64748b"),
+        hoverinfo="skip", showlegend=False,
+    ))
+
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0),
+        coloraxis_colorbar=dict(
+            title=dict(text="mm<br>acum.", font=dict(size=11)),
+            thickness=10, outlinewidth=0, len=0.55, y=0.72,
+        ),
+        **FONT_LAYOUT,
+    )
+
+    # Ritmo de la animación: 300 ms por cuadro, transición suave
+    if fig.layout.updatemenus:
+        menu = fig.layout.updatemenus[0]
+        menu.bgcolor = "#1e293b"
+        menu.font = dict(color="#e2e8f0")
+        play, pause = menu.buttons
+        play.label, pause.label = "▶ Play", "⏸ Pausa"
+        play.args[1]["frame"]["duration"] = 300
+        play.args[1]["frame"]["redraw"] = False
+        play.args[1]["transition"] = {"duration": 250, "easing": "cubic-in-out"}
+        pause.args[1]["frame"]["redraw"] = False
+    if fig.layout.sliders:
+        fig.layout.sliders[0].currentvalue = dict(
+            prefix="", font=dict(size=13, color="#94a3b8"))
+        fig.layout.sliders[0].pad = dict(t=6)
+        fig.layout.sliders[0].tickcolor = "#334155"
+    return fig
+
 
 # ==========================================
-# 6. GRÁFICO 1: MAPA ESPACIAL COMPLETO
+# 5. HOVMÖLLER: EL FRENTE COMO BANDA DIAGONAL
 # ==========================================
-# Paleta de colores para las burbujas del mapa
-def get_hex_color(val):
-    if val == 0:
-         return "#475569" # Gris (Sin lluvia)
-    elif val <= 1.0:
-         return "#38bdf8" # Celeste (Lluvia débil)
-    elif val <= 5.0:
-         return "#0284c7" # Azul
-    elif val <= 15.0:
-         return "#4f46e5" # Índigo (Lluvia fuerte)
-    else:
-         return "#7c3aed" # Violeta (Temporal)
+def build_hovmoller(df: pd.DataFrame) -> go.Figure:
+    orden_sur_norte = list(CITIES.keys())
+    pivot = (df.pivot_table(index="Ciudad", columns="Fecha_Hora",
+                            values="Precipitacion")
+               .reindex(orden_sur_norte))
+    fig = go.Figure(go.Heatmap(
+        z=pivot.values, x=pivot.columns, y=pivot.index,
+        colorscale=ESCALA_INTENSIDAD, zmin=0, zsmooth="best",
+        colorbar=dict(title=dict(text="mm/h", font=dict(size=11)),
+                      thickness=10, outlinewidth=0, len=0.8),
+        hovertemplate="%{y} · %{x|%d/%m %H:%M}<br>%{z:.1f} mm/h<extra></extra>",
+    ))
+    fig.update_layout(
+        height=440,
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(tickformat="%a %d", tickfont=dict(size=11),
+                   showgrid=False, ticklabelmode="period"),
+        yaxis=dict(tickfont=dict(size=11), showgrid=False),
+        **FONT_LAYOUT,
+    )
+    return fig
 
-# Generar mapa interactivo
-m = folium.Map(
-    location=[-38.5, -72.0], 
-    zoom_start=5, 
-    tiles="CartoDB dark_matter", 
-    control_scale=True
-)
-
-for _, row in df_actual.iterrows():
-    val = row["Precipitacion"]
-    color = get_hex_color(val)
-    radius = 6 + min(val * 3.5, 30)
-    
-    popup_html = f"""
-    <div style="font-family: Arial, sans-serif; color: #1e293b; padding: 5px;">
-        <strong style="font-size: 14px;">{row['Ciudad']}</strong><br/>
-        <span style="font-size: 12px;">Precipitación: <b>{val:.1f} mm/h</b></span>
-    </div>
-    """
-    
-    folium.CircleMarker(
-        location=[row["Latitud"], row["Longitud"]],
-        radius=radius,
-        color=color,
-        fill=True,
-        fill_color=color,
-        fill_opacity=0.8,
-        weight=1.5,
-        popup=folium.Popup(popup_html, max_width=250)
-    ).add_to(m)
-
-# Desplegar mapa inmediatamente abajo de los controles
-st_folium(m, width="100%", height=500, returned_objects=[])
 
 # ==========================================
-# 7. GRÁFICO 2: EVOLUCIÓN LATITUDINAL (BURBUJAS)
+# 6. ACUMULADO SEMANAL
 # ==========================================
-st.markdown("---")
-st.subheader("📊 Evolución del Frente (Desplazamiento Sur a Norte)")
-st.write("Evolución temporal continua del frente frío subiendo por la latitud del territorio chileno.")
+def build_acumulado(df: pd.DataFrame) -> go.Figure:
+    resumen = (df.groupby("Ciudad")
+                 .agg(Total=("Precipitacion", "sum"), Latitud=("Latitud", "first"))
+                 .reset_index()
+                 .sort_values("Latitud"))
+    fig = go.Figure(go.Bar(
+        x=resumen["Total"], y=resumen["Ciudad"], orientation="h",
+        marker=dict(
+            color=resumen["Total"], colorscale=ESCALA_ACUM,
+            cmin=0, line_width=0,
+        ),
+        text=[f"{v:.0f}" for v in resumen["Total"]],
+        textposition="outside", textfont=dict(size=11, color="#94a3b8"),
+        hovertemplate="%{y}: %{x:.1f} mm<extra></extra>",
+    ))
+    fig.update_layout(
+        height=440,
+        margin=dict(l=10, r=30, t=10, b=10),
+        xaxis=dict(title="mm en 7 días", gridcolor="#1e293b", zeroline=False),
+        yaxis=dict(showgrid=False),
+        **FONT_LAYOUT,
+    )
+    return fig
 
-df_sorted = df.sort_values(by="Latitud", ascending=True)
-
-fig_burbujas = px.scatter(
-    df_sorted,
-    x="Fecha_Hora",
-    y="Ciudad",
-    size="Precipitacion",
-    color="Precipitacion",
-    color_continuous_scale=["#475569", "#38bdf8", "#0284c7", "#4f46e5", "#7c3aed"],
-    labels={
-        "Fecha_Hora": "Fecha y Hora del Pronóstico", 
-        "Precipitacion": "Precipitación (mm/h)", 
-        "Ciudad": "Ciudad"
-    },
-    height=500
-)
-
-# Línea de tiempo que se mueve sola al ritmo del Playback
-selected_time_ms = pd.to_datetime(active_time).timestamp() * 1000
-fig_burbujas.add_vline(
-    x=selected_time_ms, 
-    line_width=3, 
-    line_dash="dash", 
-    line_color="#38bdf8"
-)
-
-fig_burbujas.update_layout(
-    plot_bgcolor="rgba(15,23,42,1)",
-    paper_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#cbd5e1"),
-    margin=dict(l=20, r=20, t=10, b=20),
-    coloraxis_colorbar=dict(title="mm/h")
-)
-
-st.plotly_chart(fig_burbujas, use_container_width=True)
 
 # ==========================================
-# 8. GRÁFICO 3: ACUMULADO SEMANAL
+# 7. APLICACIÓN
 # ==========================================
-st.markdown("---")
-st.subheader("📈 Agua Caída Estimada para los Próximos 7 Días")
+def main():
+    st.markdown(CSS, unsafe_allow_html=True)
+    st.title("🌧️ Evolución del Frente de Mal Tiempo")
+    st.caption("Pronóstico horario a 7 días · 14 ciudades entre Punta Arenas y La Serena")
 
-df_acumulado = df.groupby("Ciudad").agg({
-    "Precipitacion": "sum",
-    "Latitud": "first"
-}).reset_index().sort_values(by="Latitud", ascending=True)
+    fetch_cacheado = st.cache_data(ttl=3600, show_spinner="Consultando pronóstico…")(
+        _fetch_precipitation)
+    try:
+        df_raw = fetch_cacheado()
+    except Exception as e:
+        st.error(f"Error al conectar con el servidor meteorológico: {e}")
+        st.stop()
+    if df_raw.empty:
+        st.warning("No se pudieron cargar los datos de pronóstico.")
+        st.stop()
 
-fig_barras = px.bar(
-    df_acumulado,
-    x="Precipitacion",
-    y="Ciudad",
-    orientation='h',
-    color="Precipitacion",
-    color_continuous_scale=["#38bdf8", "#0284c7", "#7c3aed"],
-    labels={"Precipitacion": "Acumulado (mm)", "Ciudad": "Ciudad"},
-    height=450
-)
+    df, df_anim, orden_cuadros = preparar_datos(df_raw)
 
-fig_barras.update_layout(
-    plot_bgcolor="rgba(15,23,42,1)",
-    paper_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#cbd5e1"),
-    margin=dict(l=20, r=20, t=10, b=20)
-)
+    # --- Indicadores clave ---
+    tot_ciudad = df.groupby("Ciudad")["Precipitacion"].sum()
+    idx_max = df["Precipitacion"].idxmax()
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Ciudad más lluviosa (7 días)",
+              tot_ciudad.idxmax(), f"{tot_ciudad.max():.0f} mm")
+    k2.metric("Santiago (7 días)", f"{tot_ciudad.get('Santiago', 0):.0f} mm")
+    k3.metric("Intensidad máxima",
+              f"{df.loc[idx_max, 'Precipitacion']:.1f} mm/h",
+              f"{df.loc[idx_max, 'Ciudad']} · {etiqueta_es(df.loc[idx_max, 'Fecha_Hora'])}",
+              delta_color="off")
 
-st.plotly_chart(fig_barras, use_container_width=True)
+    # --- Mapa animado ---
+    st.plotly_chart(build_mapa(df_anim, orden_cuadros),
+                    use_container_width=True, config={"displayModeBar": False})
+    st.caption("El **tamaño** de cada burbuja es la intensidad de ese momento (mm/h); "
+               "su **color** es el agua acumulada hasta entonces. "
+               "La animación corre en tu navegador: presiona ▶ o arrastra la barra.")
 
-# ==========================================
-# 9. PIE DE PÁGINA (Firma Solicitada)
-# ==========================================
-st.markdown(
-    """
-    <div class="custom-footer">
-        Sitio desarrollado por <strong>Carlos Mendoza - CMENTO</strong> - para un grupo privado.<br>
-        Todos los derechos reservados &copy; 2026. Datos provistos por Open-Meteo.
-    </div>
-    """, 
-    unsafe_allow_html=True
-)
+    # --- Hovmöller ---
+    st.markdown("---")
+    st.subheader("El frente visto en el tiempo")
+    st.caption("Cada fila es una ciudad (sur abajo, norte arriba); cada columna, una hora. "
+               "La banda diagonal luminosa es el frente desplazándose hacia el norte.")
+    st.plotly_chart(build_hovmoller(df), use_container_width=True,
+                    config={"displayModeBar": False})
 
-# ==========================================
-# 10. BUCLE DE ANIMACIÓN (LOOP)
-# ==========================================
-if st.session_state.playing:
-    time.sleep(0.6)  # Velocidad de avance de la tormenta (0.6 segundos por hora)
-    # Incrementar el paso del tiempo y volver a cargar el mapa
-    st.session_state.current_index = (st.session_state.current_index + 1) % len(horas_disponibles)
-    st.rerun()
+    # --- Acumulado ---
+    st.markdown("---")
+    st.subheader("Agua caída estimada · próximos 7 días")
+    st.plotly_chart(build_acumulado(df), use_container_width=True,
+                    config={"displayModeBar": False})
+
+    st.markdown(
+        """
+        <div class="custom-footer">
+            Sitio desarrollado por <strong>Carlos Mendoza - CMENTO</strong> - para un grupo privado.<br>
+            Todos los derechos reservados &copy; 2026. Datos provistos por Open-Meteo.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
