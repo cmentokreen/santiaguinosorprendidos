@@ -1,4 +1,10 @@
 streamlit>=1.36
 pandas
+numpy
 requests
 plotly>=5.18
+
+# Solo para el script offline cordex_fetch.py (NO se instalan en la app):
+# cdsapi>=0.7
+# xarray
+# netCDF4
