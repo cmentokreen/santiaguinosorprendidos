@@ -38,10 +38,13 @@ CITIES = {
     "Osorno": {"lat": -40.574, "lon": -73.125},
     "Valdivia": {"lat": -39.814, "lon": -73.246},
     "Temuco": {"lat": -38.736, "lon": -72.590},
+    "Nacimiento": {"lat": -37.503, "lon": -72.673},
     "Concepción": {"lat": -36.827, "lon": -73.050},
     "Chillán": {"lat": -36.607, "lon": -72.103},
     "Talca": {"lat": -35.426, "lon": -71.656},
     "Rancagua": {"lat": -34.165, "lon": -70.740},
+    "Santo Domingo": {"lat": -33.638, "lon": -71.630},
+    "San Antonio": {"lat": -33.593, "lon": -71.607},
     "Santiago": {"lat": -33.449, "lon": -70.662},
     "Valparaíso": {"lat": -33.047, "lon": -71.613},
     "La Serena": {"lat": -29.902, "lon": -71.252},
@@ -109,9 +112,10 @@ def preparar_datos(df: pd.DataFrame, paso_horas: int = 3):
     df["Acumulado"] = df.groupby("Ciudad")["Precipitacion"].cumsum()
 
     df_anim = df[df["Fecha_Hora"].dt.hour % paso_horas == 0].copy()
-    # Escala perceptual: la raíz cuadrada hace visible la llovizna
-    # sin que los temporales dominen todo el mapa
-    df_anim["Burbuja"] = np.sqrt(df_anim["Precipitacion"])
+    # Escala perceptual sobre el ACUMULADO: la burbuja crece con el agua
+    # caída y persiste tras el paso del frente (la huella del evento).
+    # La raíz cuadrada evita que las ciudades más lluviosas aplasten al resto.
+    df_anim["Impacto"] = np.sqrt(df_anim["Acumulado"])
     df_anim["Cuadro"] = df_anim["Fecha_Hora"].map(etiqueta_es)
     orden_cuadros = [etiqueta_es(t) for t in sorted(df_anim["Fecha_Hora"].unique())]
     return df, df_anim, orden_cuadros
@@ -127,20 +131,21 @@ def build_mapa(df_anim: pd.DataFrame, orden_cuadros: list,
     estilo = {"map_style": "carto-darkmatter"} if usa_maplibre \
         else {"mapbox_style": "carto-darkmatter"}
 
-    max_acum = float(df_anim["Acumulado"].max()) or 1.0
+    max_intens = float(df_anim["Precipitacion"].max()) or 1.0
     fig = scatter(
         df_anim,
         lat="Latitud", lon="Longitud",
-        size="Burbuja", size_max=32,
-        color="Acumulado",
+        size="Impacto", size_max=58,
+        opacity=0.78,
+        color="Precipitacion",
         color_continuous_scale=ESCALA_ACUM,
-        range_color=(0, max_acum),
+        range_color=(0, max_intens),
         animation_frame="Cuadro",
         category_orders={"Cuadro": orden_cuadros},
         hover_name="Ciudad",
         hover_data={
             "Latitud": False, "Longitud": False, "Cuadro": False,
-            "Burbuja": False,
+            "Impacto": False,
             "Precipitacion": ":.1f", "Acumulado": ":.0f",
         },
         labels={"Precipitacion": "mm/h", "Acumulado": "mm acumulados"},
@@ -163,7 +168,7 @@ def build_mapa(df_anim: pd.DataFrame, orden_cuadros: list,
     fig.update_layout(
         margin=dict(l=0, r=0, t=0, b=0),
         coloraxis_colorbar=dict(
-            title=dict(text="mm<br>acum.", font=dict(size=11)),
+            title=dict(text="mm/h<br>ahora", font=dict(size=11)),
             thickness=10, outlinewidth=0, len=0.55, y=0.72,
         ),
         **FONT_LAYOUT,
@@ -308,9 +313,10 @@ def main():
     st.plotly_chart(build_mapa(df_anim, orden_cuadros, st.session_state.zoom),
                     use_container_width=True,
                     config={"displayModeBar": False, "scrollZoom": True})
-    st.caption("El **tamaño** de cada burbuja es la intensidad de ese momento (mm/h); "
-               "su **color** es el agua acumulada hasta entonces. "
-               "Las ciudades sin lluvia muestran solo su punto fijo. "
+    st.caption("El **tamaño** de cada burbuja es el agua acumulada hasta ese momento "
+               "—crece con el paso del frente y queda como huella del evento—; "
+               "su **color** es la intensidad de la lluvia en ese instante, "
+               "así el borde activo del frente se ve encendido. "
                "Presiona ▶ o arrastra la barra: la animación corre en tu navegador.")
 
     # --- Hovmöller ---
@@ -326,6 +332,24 @@ def main():
     st.subheader("Agua caída estimada · próximos 7 días")
     st.plotly_chart(build_acumulado(df), use_container_width=True,
                     config={"displayModeBar": False})
+
+    # --- Visor ECMWF sobre Sudamérica (Windy) ---
+    st.markdown("---")
+    st.subheader("El frente sobre Sudamérica · modelo ECMWF")
+    st.caption("Visor interactivo de Windy con el modelo europeo. Presiona el play "
+               "de **su** línea de tiempo (abajo del visor) para ver los sistemas "
+               "frontales avanzando desde el Pacífico hacia el continente.")
+    from streamlit.components.v1 import iframe as st_iframe
+    url_windy = (
+        "https://embed.windy.com/embed2.html"
+        "?lat=-36.5&lon=-76&zoom=3&level=surface"
+        "&overlay=rain&product=ecmwf"
+        "&menu=&message=true&marker=&calendar=now&pressure="
+        "&type=map&location=coordinates&detail="
+        "&metricWind=km%2Fh&metricTemp=%C2%B0C&metricRain=mm&radarRange=-1"
+    )
+    st_iframe(url_windy, height=520, scrolling=False)
+    st.caption("Fuente: Windy.com · datos del modelo ECMWF.")
 
     st.markdown(
         """
