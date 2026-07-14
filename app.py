@@ -1,4 +1,5 @@
 import streamlit as st
+import numpy as np
 import pandas as pd
 import requests
 import plotly.express as px
@@ -108,6 +109,9 @@ def preparar_datos(df: pd.DataFrame, paso_horas: int = 3):
     df["Acumulado"] = df.groupby("Ciudad")["Precipitacion"].cumsum()
 
     df_anim = df[df["Fecha_Hora"].dt.hour % paso_horas == 0].copy()
+    # Escala perceptual: la raíz cuadrada hace visible la llovizna
+    # sin que los temporales dominen todo el mapa
+    df_anim["Burbuja"] = np.sqrt(df_anim["Precipitacion"])
     df_anim["Cuadro"] = df_anim["Fecha_Hora"].map(etiqueta_es)
     orden_cuadros = [etiqueta_es(t) for t in sorted(df_anim["Fecha_Hora"].unique())]
     return df, df_anim, orden_cuadros
@@ -116,7 +120,8 @@ def preparar_datos(df: pd.DataFrame, paso_horas: int = 3):
 # ==========================================
 # 4. MAPA ANIMADO (CLIENT-SIDE, SIN RERUNS)
 # ==========================================
-def build_mapa(df_anim: pd.DataFrame, orden_cuadros: list) -> go.Figure:
+def build_mapa(df_anim: pd.DataFrame, orden_cuadros: list,
+               zoom: float = 5.0) -> go.Figure:
     usa_maplibre = hasattr(px, "scatter_map")
     scatter = px.scatter_map if usa_maplibre else px.scatter_mapbox
     estilo = {"map_style": "carto-darkmatter"} if usa_maplibre \
@@ -126,7 +131,7 @@ def build_mapa(df_anim: pd.DataFrame, orden_cuadros: list) -> go.Figure:
     fig = scatter(
         df_anim,
         lat="Latitud", lon="Longitud",
-        size="Precipitacion", size_max=26,
+        size="Burbuja", size_max=32,
         color="Acumulado",
         color_continuous_scale=ESCALA_ACUM,
         range_color=(0, max_acum),
@@ -135,10 +140,11 @@ def build_mapa(df_anim: pd.DataFrame, orden_cuadros: list) -> go.Figure:
         hover_name="Ciudad",
         hover_data={
             "Latitud": False, "Longitud": False, "Cuadro": False,
+            "Burbuja": False,
             "Precipitacion": ":.1f", "Acumulado": ":.0f",
         },
         labels={"Precipitacion": "mm/h", "Acumulado": "mm acumulados"},
-        zoom=3.3, center={"lat": -41.2, "lon": -72.3},
+        zoom=zoom, center={"lat": -34.2, "lon": -71.3},
         height=560,
         **estilo,
     )
@@ -163,22 +169,40 @@ def build_mapa(df_anim: pd.DataFrame, orden_cuadros: list) -> go.Figure:
         **FONT_LAYOUT,
     )
 
-    # Ritmo de la animación: 300 ms por cuadro, transición suave
+    # CLAVE: en trazas de mapa, los cuadros NO repintan tamaño/color
+    # con redraw=False. Debe ser True para que la animación se vea.
     if fig.layout.updatemenus:
         menu = fig.layout.updatemenus[0]
         menu.bgcolor = "#1e293b"
         menu.font = dict(color="#e2e8f0")
         play, pause = menu.buttons
         play.label, pause.label = "▶ Play", "⏸ Pausa"
-        play.args[1]["frame"]["duration"] = 300
-        play.args[1]["frame"]["redraw"] = False
-        play.args[1]["transition"] = {"duration": 250, "easing": "cubic-in-out"}
-        pause.args[1]["frame"]["redraw"] = False
+        play.args[1]["frame"]["duration"] = 450
+        play.args[1]["frame"]["redraw"] = True
+        play.args[1]["transition"] = {"duration": 0}
+        pause.args[1]["frame"]["redraw"] = True
     if fig.layout.sliders:
-        fig.layout.sliders[0].currentvalue = dict(
+        slider = fig.layout.sliders[0]
+        slider.currentvalue = dict(
             prefix="", font=dict(size=13, color="#94a3b8"))
-        fig.layout.sliders[0].pad = dict(t=6)
-        fig.layout.sliders[0].tickcolor = "#334155"
+        slider.pad = dict(t=6)
+        slider.tickcolor = "#334155"
+        for step in slider.steps:
+            step.args[1]["frame"]["duration"] = 0
+            step.args[1]["frame"]["redraw"] = True
+            step.args[1]["mode"] = "immediate"
+            step.args[1]["transition"] = {"duration": 0}
+
+        # Abrir el mapa en el primer cuadro con lluvia, no en uno seco
+        lluvia = df_anim.groupby("Cuadro")["Precipitacion"].sum()
+        con_lluvia = [i for i, c in enumerate(orden_cuadros)
+                      if lluvia.get(c, 0) > 0]
+        if con_lluvia:
+            i0 = con_lluvia[0]
+            datos_i0 = fig.frames[i0].data[0].to_plotly_json()
+            datos_i0.pop("type", None)
+            fig.data[0].update(datos_i0)
+            slider.active = i0
     return fig
 
 
@@ -269,12 +293,25 @@ def main():
               f"{df.loc[idx_max, 'Ciudad']} · {etiqueta_es(df.loc[idx_max, 'Fecha_Hora'])}",
               delta_color="off")
 
-    # --- Mapa animado ---
-    st.plotly_chart(build_mapa(df_anim, orden_cuadros),
-                    use_container_width=True, config={"displayModeBar": False})
+    # --- Mapa animado con control de zoom ---
+    if "zoom" not in st.session_state:
+        st.session_state.zoom = 5.0
+    cz1, cz2, cz3 = st.columns([1, 1, 3])
+    if cz1.button("➕ Acercar", use_container_width=True):
+        st.session_state.zoom = min(st.session_state.zoom + 0.7, 9.0)
+    if cz2.button("➖ Alejar", use_container_width=True):
+        st.session_state.zoom = max(st.session_state.zoom - 0.7, 3.0)
+    cz3.caption("Vista inicial: Santiago y regiones adyacentes. "
+                "También funciona el pinch en el teléfono y el scroll con el mouse; "
+                "arrastra para desplazarte hacia el sur o el norte.")
+
+    st.plotly_chart(build_mapa(df_anim, orden_cuadros, st.session_state.zoom),
+                    use_container_width=True,
+                    config={"displayModeBar": False, "scrollZoom": True})
     st.caption("El **tamaño** de cada burbuja es la intensidad de ese momento (mm/h); "
                "su **color** es el agua acumulada hasta entonces. "
-               "La animación corre en tu navegador: presiona ▶ o arrastra la barra.")
+               "Las ciudades sin lluvia muestran solo su punto fijo. "
+               "Presiona ▶ o arrastra la barra: la animación corre en tu navegador.")
 
     # --- Hovmöller ---
     st.markdown("---")
