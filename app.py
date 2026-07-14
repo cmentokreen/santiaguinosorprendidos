@@ -320,23 +320,3 @@ st.markdown(
     """, 
     unsafe_allow_html=True
 )
-```eof
-
-```text:requirements.txt
-streamlit>=1.25.0
-pandas>=1.5.0
-requests>=2.28.0
-folium>=0.14.0
-streamlit-folium>=0.13.0
-plotly>=5.13.0
-```eof
-
----
-
-### Resumen de las mejoras visuales implementadas:
-
-*   **Línea de tiempo legible:** El `st.select_slider` transforma las marcas de tiempo complejas en un texto formateado claro como *"Lun 15/07 - 14:00"*, eliminando confusiones.
-*   **Distribución de pantalla:** Eliminamos el diseño de dos columnas que achicaba el mapa. Ahora, el mapa se despliega en tamaño gigante y, justo debajo, el gráfico de burbujas sirve como radiografía temporal interactiva.
-*   **Línea indicadora sincronizada:** Al mover el slider de la línea de tiempo, verás aparecer una línea roja vertical punteada en el gráfico de burbujas, mostrándote exactamente en qué momento del frente te encuentras posicionado.
-*   **Diseño Oscuro Profesional:** Los contrastes mejorados (azul brillante, cian y morado neón sobre fondo gris pizarra) garantizan que la aplicación luzca como un sistema moderno de análisis de datos.
-*   **Firma de cierre:** El pie de página inferior quedó integrado estéticamente en la base del sitio.
