@@ -4,47 +4,91 @@ import requests
 import folium
 from streamlit_folium import st_folium
 import plotly.express as px
+from datetime import datetime
 
-# 1. Configuración de la interfaz de la página
+# ==========================================
+# 1. CONFIGURACIÓN DE LA PÁGINA Y ESTILOS CSS
+# ==========================================
 st.set_page_config(
-    page_title="Pronóstico de Precipitación - Chile",
+    page_title="Monitoreo de Frentes de Lluvia - Chile",
     page_icon="🌧️",
     layout="wide"
 )
 
-# Diseño estético personalizado
+# Estilos CSS avanzados para una interfaz premium y moderna
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
-    h1 { color: #1e3d59; font-family: 'Segoe UI', Arial, sans-serif; }
-    h3 { color: #17b978; }
+    /* Fondo general y fuentes */
+    .main {
+        background-color: #0f172a; /* Slate 900 (Fondo oscuro profesional) */
+        color: #f8fafc;
+    }
+    
+    /* Encabezados */
+    h1, h2, h3 {
+        color: #f1f5f9 !important;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        font-weight: 700;
+    }
+    
+    /* Contenedores de tarjetas */
+    .metric-card {
+        background-color: #1e293b;
+        border-radius: 12px;
+        padding: 20px;
+        border: 1px solid #334155;
+        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        margin-bottom: 20px;
+    }
+    
+    /* Modificar elementos de Streamlit */
+    .stSlider > div [data-baseweb="slider"] {
+        background: linear-gradient(90deg, #38bdf8, #818cf8);
+        height: 8px;
+        border-radius: 4px;
+    }
+    
+    /* Pie de página elegante */
+    .custom-footer {
+        text-align: center;
+        padding: 30px 10px;
+        margin-top: 50px;
+        border-top: 1px solid #334155;
+        color: #94a3b8;
+        font-size: 14px;
+        letter-spacing: 0.5px;
+    }
+    .custom-footer strong {
+        color: #38bdf8;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🌧️ Visualizador de Frentes y Pronóstico de Precipitación")
-st.write("Esta aplicación muestra en tiempo real la evolución espacial y temporal de las lluvias en Chile para los próximos 7 días.")
-
-# 2. Definir las ciudades (Perfil latitudinal de Chile, de Norte a Sur)
+# ==========================================
+# 2. DEFINICIÓN DE CIUDADES (Sur a Norte)
+# ==========================================
 CITIES = {
-    "La Serena": {"lat": -29.902, "lon": -71.252},
-    "Valparaíso": {"lat": -33.047, "lon": -71.613},
-    "Santiago": {"lat": -33.449, "lon": -70.662},
-    "Rancagua": {"lat": -34.165, "lon": -70.740},
-    "Talca": {"lat": -35.426, "lon": -71.656},
-    "Chillán": {"lat": -36.607, "lon": -72.103},
-    "Concepción": {"lat": -36.827, "lon": -73.050},
-    "Temuco": {"lat": -38.736, "lon": -72.590},
-    "Valdivia": {"lat": -39.814, "lon": -73.246},
-    "Osorno": {"lat": -40.574, "lon": -73.125},
-    "Puerto Montt": {"lat": -41.469, "lon": -72.942},
-    "Castro": {"lat": -42.472, "lon": -73.764},
+    "Punta Arenas": {"lat": -53.155, "lon": -70.909},
     "Coyhaique": {"lat": -45.575, "lon": -72.066},
-    "Punta Arenas": {"lat": -53.155, "lon": -70.909}
+    "Castro": {"lat": -42.472, "lon": -73.764},
+    "Puerto Montt": {"lat": -41.469, "lon": -72.942},
+    "Osorno": {"lat": -40.574, "lon": -73.125},
+    "Valdivia": {"lat": -39.814, "lon": -73.246},
+    "Temuco": {"lat": -38.736, "lon": -72.590},
+    "Concepción": {"lat": -36.827, "lon": -73.050},
+    "Chillán": {"lat": -36.607, "lon": -72.103},
+    "Talca": {"lat": -35.426, "lon": -71.656},
+    "Rancagua": {"lat": -34.165, "lon": -70.740},
+    "Santiago": {"lat": -33.449, "lon": -70.662},
+    "Valparaíso": {"lat": -33.047, "lon": -71.613},
+    "La Serena": {"lat": -29.902, "lon": -71.252}
 }
 
-# 3. Función para descargar datos desde Open-Meteo API (con Caché para velocidad)
-@st.cache_data(ttl=3600)  # Guarda la información en caché por 1 hora para no saturar la API
-def fetch_forecast_data():
+# ==========================================
+# 3. OBTENCIÓN DE DATOS (CON CACHÉ)
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_precipitation_forecast():
     lats = [str(info["lat"]) for info in CITIES.values()]
     lons = [str(info["lon"]) for info in CITIES.values()]
     
@@ -62,7 +106,6 @@ def fetch_forecast_data():
         response.raise_for_status()
         data = response.json()
         
-        # Open-Meteo devuelve una lista si hay múltiples coordenadas
         if not isinstance(data, list):
             data = [data]
             
@@ -82,139 +125,218 @@ def fetch_forecast_data():
                 })
         return pd.DataFrame(records)
     except Exception as e:
-        st.error(f"Error al conectar con la API de clima: {e}")
+        st.error(f"Error al conectar con el servidor meteorológico: {e}")
         return pd.DataFrame()
 
-# Descarga de datos
-df = fetch_forecast_data()
+# Descarga de datos climáticos
+df = fetch_precipitation_forecast()
 
 if df.empty:
+    st.warning("No se pudieron cargar los datos de pronóstico en este momento.")
     st.stop()
 
-# Helper para formatear fechas a español
+# ==========================================
+# 4. TRADUCCIÓN Y FORMATEO DE FECHAS
+# ==========================================
 dias_es = {
-    "Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", 
-    "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sábado", "Sunday": "Domingo"
+    "Monday": "Lun", "Tuesday": "Mar", "Wednesday": "Mié", 
+    "Thursday": "Jue", "Friday": "Vie", "Saturday": "Sáb", "Sunday": "Dom"
 }
 
-def format_es(dt):
-    dia_eng = dt.strftime("%A")
-    dia_traducido = dias_es.get(dia_eng, dia_eng)
-    return f"{dia_traducido} {dt.strftime('%d/%m - %H:00')}"
+def format_date_es(dt):
+    dt_p = pd.to_datetime(dt)
+    dia_eng = dt_p.strftime("%A")
+    dia_trad = dias_es.get(dia_eng, dia_eng)
+    return f"{dia_trad} {dt_p.strftime('%d/%m - %H:00')}"
 
-# Lista ordenada de horas para el slider
-horas_unicas = sorted(df["Fecha_Hora"].unique())
+# Generar lista de marcas de tiempo ordenadas
+horas_disponibles = sorted(df["Fecha_Hora"].unique())
 
-# 4. Barra lateral interactiva para controlar el tiempo
-st.sidebar.header("🛠️ Panel de Control")
-st.sidebar.write("Usa el deslizador para ver avanzar el frente de mal tiempo hora por hora:")
+# ==========================================
+# 5. CONTROLADOR DE LÍNEA DE TIEMPO (ST.SELECT_SLIDER)
+# ==========================================
+st.title("🌧️ Panel de Evolución Atmosférica y Frente de Lluvia")
+st.write("Visualización interactiva de la propagación de frentes nubosos y precipitaciones estimadas para la próxima semana en Chile.")
 
-selected_time_index = st.sidebar.slider(
-    "Línea de tiempo:",
-    min_value=0,
-    max_value=len(horas_unicas) - 1,
-    value=0,
-    format="" 
+st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
+st.subheader("🕐 Control Maestro del Frente (Línea de Tiempo)")
+st.write("Arrastra el deslizador para ver cómo avanza el frente hora a hora por el territorio nacional:")
+
+# Deslizador semántico usando st.select_slider
+selected_time = st.select_slider(
+    label="Selecciona fecha y hora de simulación",
+    options=horas_disponibles,
+    value=horas_disponibles[0],
+    format_func=format_date_es,
+    label_visibility="collapsed"
 )
 
-selected_time = horas_unicas[selected_time_index]
-st.sidebar.info(f"📅 Visualizando: **{format_es(pd.to_datetime(selected_time))}**")
+# Mostrar fecha destacada
+st.markdown(f"### 📍 Simulación activa para el: <span style='color:#38bdf8;'>{format_date_es(selected_time)}</span>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
 
-# Filtrar datos para la hora seleccionada
+# Filtrar datos de la hora seleccionada para el mapa
 df_actual = df[df["Fecha_Hora"] == selected_time]
 
-# 5. Definición de la paleta de colores para la lluvia (Escala Blues / PuBu)
-def get_color(val):
+# ==========================================
+# 6. GRÁFICO 1: MAPA ESPACIAL COMPLETO (ANCHO TOTAL)
+# ==========================================
+st.subheader("🗺️ 1. Posición Espacial del Frente de Mal Tiempo")
+st.write("El tamaño y brillo de las burbujas indican la intensidad de la lluvia (mm/h) en tiempo real sobre la geografía de Chile.")
+
+# Paleta de colores para las burbujas del mapa
+def get_hex_color(val):
     if val == 0:
-        return "#e0e8f5"  # Gris azulado muy tenue (sin lluvia)
+         return "#334155" # Gris oscuro (Sin precipitación)
     elif val <= 1.0:
-        return "#a1dab4"  # Verde agua claro (lluvia muy débil)
+         return "#06b6d4" # Turquesa claro (Lluvia débil)
     elif val <= 5.0:
-        return "#41b6c4"  # Celeste intermedio
+         return "#3b82f6" # Azul medio
     elif val <= 15.0:
-        return "#2c7fb8"  # Azul fuerte
+         return "#6366f1" # Indigo intenso (Lluvia fuerte)
     else:
-        return "#253494"  # Azul marino profundo (lluvia intensa/frente activo)
+         return "#a855f7" # Morado neón (Frente severo / Temporal)
 
-# 6. Distribución de pantalla en dos columnas principales
-col1, col2 = st.columns([1, 1.2])
+# Generar mapa interactivo
+m = folium.Map(
+    location=[-38.5, -72.0], 
+    zoom_start=5, 
+    tiles="CartoDB dark_matter", # Estilo oscuro para resaltar la paleta de colores
+    control_scale=True
+)
 
-with col1:
-    st.subheader("🗺️ Mapa Espacial del Frente")
-    st.write("El tamaño y oscuridad del círculo representan la intensidad del agua:")
+for _, row in df_actual.iterrows():
+    val = row["Precipitacion"]
+    color = get_hex_color(val)
+    radius = 6 + min(val * 3.5, 30) # Escala de tamaño dinámica
     
-    # Mapa centrado en el centro-sur de Chile
-    m = folium.Map(location=[-37.5, -72.5], zoom_start=5.5, tiles="cartodbpositron")
+    popup_html = f"""
+    <div style="font-family: Arial, sans-serif; color: #1e293b; padding: 5px;">
+        <strong style="font-size: 14px;">{row['Ciudad']}</strong><br/>
+        <span style="font-size: 12px;">Precipitación: <b>{val:.1f} mm/h</b></span>
+    </div>
+    """
     
-    for _, row in df_actual.iterrows():
-        val = row["Precipitacion"]
-        color = get_color(val)
-        radius = 7 + min(val * 2.5, 25) # Escala dinámica
-        
-        popup_text = f"<b>{row['Ciudad']}</b><br>Intensidad: {val:.1f} mm/h"
-        
-        folium.CircleMarker(
-            location=[row["Latitud"], row["Longitud"]],
-            radius=radius,
-            color=color,
-            fill=True,
-            fill_color=color,
-            fill_opacity=0.75,
-            weight=1.5,
-            popup=folium.Popup(popup_text, max_width=200)
-        ).add_to(m)
-        
-    st_folium(m, width="100%", height=500, returned_objects=[])
+    folium.CircleMarker(
+        location=[row["Latitud"], row["Longitud"]],
+        radius=radius,
+        color=color,
+        fill=True,
+        fill_color=color,
+        fill_opacity=0.85,
+        weight=1.5,
+        popup=folium.Popup(popup_html, max_width=250)
+    ).add_to(m)
 
-with col2:
-    st.subheader("📊 Evolución Temporal (Sur a Norte)")
-    st.write("Dado que en Chile los frentes suben desde el sur (altas latitudes), este gráfico de burbujas te muestra cómo se desplaza la lluvia en el tiempo:")
-    
-    # Ordenar geográficamente para el eje Y de sur a norte
-    df_chart = df.sort_values(by="Latitud", ascending=True)
-    
-    # Gráfico interactivo de burbujas
-    fig = px.scatter(
-        df_chart,
-        x="Fecha_Hora",
-        y="Ciudad",
-        size="Precipitacion",
-        color="Precipitacion",
-        color_continuous_scale="PuBu",
-        labels={"Fecha_Hora": "Tiempo", "Precipitacion": "Lluvia (mm/h)", "Ciudad": "Ciudad (Sur a Norte)"},
-        height=500
-    )
-    
-    fig.update_layout(
-        margin=dict(l=20, r=20, t=20, b=20),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        coloraxis_colorbar=dict(title="mm/h")
-    )
-    
-    # Añade una línea roja que se mueve dinámicamente con el slider del mapa
-    fig.add_vline(x=selected_time.timestamp() * 1000, line_width=2, line_dash="dash", line_color="red")
-    
-    st.plotly_chart(fig, use_container_width=True)
+# Desplegar mapa a pantalla completa
+st_folium(m, width="100%", height=550, returned_objects=[])
 
-# 7. Resumen de Agua Acumulada Semanal (Parte Inferior)
+# ==========================================
+# 7. GRÁFICO 2: EVOLUCIÓN LATITUDINAL (BURBUJAS)
+# ==========================================
 st.markdown("---")
-st.subheader("📈 Proyección de Agua Acumulada para la Semana (Total)")
+st.subheader("📊 2. Evolución Temporal del Frente (Desplazamiento Sur a Norte)")
+st.write("Este gráfico permite ver de forma continua cómo ascienden las lluvias desde el extremo sur (abajo) hacia la zona central y norte (arriba) a lo largo de los días.")
+
+# Ordenar geográficamente las ciudades de Sur a Norte
+df_sorted = df.sort_values(by="Latitud", ascending=True)
+
+# Gráfico de burbujas interactivo
+fig_burbujas = px.scatter(
+    df_sorted,
+    x="Fecha_Hora",
+    y="Ciudad",
+    size="Precipitacion",
+    color="Precipitacion",
+    color_continuous_scale=["#334155", "#06b6d4", "#3b82f6", "#6366f1", "#a855f7"],
+    labels={
+        "Fecha_Hora": "Día y Hora del Pronóstico", 
+        "Precipitacion": "Precipitación (mm/h)", 
+        "Ciudad": "Ciudad (Ordenada de Sur a Norte)"
+    },
+    height=550
+)
+
+# Línea vertical indicadora del tiempo actual
+selected_time_ms = pd.to_datetime(selected_time).timestamp() * 1000
+fig_burbujas.add_vline(
+    x=selected_time_ms, 
+    line_width=3, 
+    line_dash="dash", 
+    line_color="#f43f5e" # Rojo neón para máxima visibilidad
+)
+
+fig_burbujas.update_layout(
+    plot_bgcolor="rgba(15,23,42,1)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#cbd5e1"),
+    margin=dict(l=40, r=40, t=20, b=40),
+    coloraxis_colorbar=dict(title="mm/h")
+)
+
+st.plotly_chart(fig_burbujas, use_container_width=True)
+
+# ==========================================
+# 8. GRÁFICO 3: ACUMULADO SEMANAL TOTAL
+# ==========================================
+st.markdown("---")
+st.subheader("📈 3. Estimación de Agua Caída Acumulada para la Semana")
+st.write("Suma total de milímetros de lluvia proyectados por ciudad para los próximos 7 días.")
 
 df_acumulado = df.groupby("Ciudad").agg({
     "Precipitacion": "sum",
     "Latitud": "first"
 }).reset_index().sort_values(by="Latitud", ascending=True)
 
-fig_bar = px.bar(
+fig_barras = px.bar(
     df_acumulado,
     x="Precipitacion",
     y="Ciudad",
     orientation='h',
     color="Precipitacion",
-    color_continuous_scale="PuBu",
-    labels={"Precipitacion": "Milímetros Acumulados (7 días)", "Ciudad": "Ciudad"},
-    height=400
+    color_continuous_scale=["#06b6d4", "#3b82f6", "#a855f7"],
+    labels={"Precipitacion": "Agua acumulada (mm en 7 días)", "Ciudad": "Ciudad"},
+    height=450
 )
-fig_bar.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-st.plotly_chart(fig_bar, use_container_width=True)
+
+fig_barras.update_layout(
+    plot_bgcolor="rgba(15,23,42,1)",
+    paper_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#cbd5e1"),
+    margin=dict(l=40, r=40, t=20, b=40)
+)
+
+st.plotly_chart(fig_barras, use_container_width=True)
+
+# ==========================================
+# 9. PIE DE PÁGINA / CIERRE INSTITUCIONAL
+# ==========================================
+st.markdown(
+    """
+    <div class="custom-footer">
+        Sitio desarrollado por <strong>Carlos Mendoza - CMENTO</strong> - para un grupo privado.<br>
+        Todos los derechos reservados &copy; 2026. Datos de simulación provistos en tiempo real por Open-Meteo.
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+```eof
+
+```text:requirements.txt
+streamlit>=1.25.0
+pandas>=1.5.0
+requests>=2.28.0
+folium>=0.14.0
+streamlit-folium>=0.13.0
+plotly>=5.13.0
+```eof
+
+---
+
+### Resumen de las mejoras visuales implementadas:
+
+*   **Línea de tiempo legible:** El `st.select_slider` transforma las marcas de tiempo complejas en un texto formateado claro como *"Lun 15/07 - 14:00"*, eliminando confusiones.
+*   **Distribución de pantalla:** Eliminamos el diseño de dos columnas que achicaba el mapa. Ahora, el mapa se despliega en tamaño gigante y, justo debajo, el gráfico de burbujas sirve como radiografía temporal interactiva.
+*   **Línea indicadora sincronizada:** Al mover el slider de la línea de tiempo, verás aparecer una línea roja vertical punteada en el gráfico de burbujas, mostrándote exactamente en qué momento del frente te encuentras posicionado.
+*   **Diseño Oscuro Profesional:** Los contrastes mejorados (azul brillante, cian y morado neón sobre fondo gris pizarra) garantizan que la aplicación luzca como un sistema moderno de análisis de datos.
+*   **Firma de cierre:** El pie de página inferior quedó integrado estéticamente en la base del sitio.
