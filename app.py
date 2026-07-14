@@ -267,7 +267,7 @@ def build_acumulado(df: pd.DataFrame) -> go.Figure:
 # ==========================================
 def main():
     st.markdown(CSS, unsafe_allow_html=True)
-    st.title("🌧️ Evolución del Frente de Mal Tiempo")
+    st.title("🌧️ Evolución del Frente de Lluvias /Rio Atmosferico")
     st.caption("Pronóstico horario a 7 días · 14 ciudades entre Punta Arenas y La Serena")
 
     fetch_cacheado = st.cache_data(ttl=3600, show_spinner="Consultando pronóstico…")(
