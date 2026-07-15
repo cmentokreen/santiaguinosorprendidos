@@ -99,6 +99,33 @@ def etiqueta_es(ts: pd.Timestamp) -> str:
 # ==========================================
 # 3. DATOS (OPEN-METEO, CON CACHÉ)
 # ==========================================
+import time
+
+
+def _get_con_reintentos(url, params, timeout=25, intentos=4):
+    """GET con reintentos ante 429 (límite de peticiones) y 5xx.
+    Respeta el header Retry-After cuando viene; si no, espera creciente."""
+    espera = 2.0
+    ultimo_error = None
+    for n in range(intentos):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            if r.status_code == 429 or r.status_code >= 500:
+                ultimo_error = requests.HTTPError(
+                    f"{r.status_code} {r.reason}", response=r)
+                pausa = float(r.headers.get("Retry-After", espera))
+                time.sleep(min(pausa, 20))
+                espera *= 2
+                continue
+            r.raise_for_status()
+            return r
+        except requests.RequestException as e:
+            ultimo_error = e
+            time.sleep(espera)
+            espera *= 2
+    raise ultimo_error
+
+
 def _fetch_precipitation() -> pd.DataFrame:
     lats = [str(c["lat"]) for c in CITIES.values()]
     lons = [str(c["lon"]) for c in CITIES.values()]
@@ -110,8 +137,7 @@ def _fetch_precipitation() -> pd.DataFrame:
         "timezone": "America/Santiago",
         "forecast_days": 7,
     }
-    response = requests.get(url, params=params, timeout=25)
-    response.raise_for_status()
+    response = _get_con_reintentos(url, params, timeout=25)
     data = response.json()
     if not isinstance(data, list):
         data = [data]
@@ -308,12 +334,23 @@ def main():
     st.title("🌧️ Evolución del Frente de Mal Tiempo")
     st.caption("Pronóstico horario a 7 días · 17 ciudades entre Punta Arenas y La Serena")
 
-    fetch_cacheado = st.cache_data(ttl=3600, show_spinner="Consultando pronóstico…")(
+    fetch_cacheado = st.cache_data(ttl=1800, show_spinner="Consultando pronóstico…")(
         _fetch_precipitation)
     try:
         df_raw = fetch_cacheado()
     except Exception as e:
-        st.error(f"Error al conectar con el servidor meteorológico: {e}")
+        msg = str(e)
+        if "429" in msg or "Too Many Requests" in msg:
+            st.warning(
+                "⏳ **Open-Meteo está limitando las peticiones (error 429).** "
+                "La API gratuita permite un número acotado de consultas por minuto "
+                "y por día. Espera un momento y presiona **⟳ Reintentar**; los datos "
+                "quedan luego en caché por 30 minutos.")
+            if st.button("⟳ Reintentar"):
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            st.error(f"Error al conectar con el servidor meteorológico: {e}")
         st.stop()
     if df_raw.empty:
         st.warning("No se pudieron cargar los datos de pronóstico.")
